@@ -5,32 +5,28 @@ import face_recognition
 import cv2
 from datetime import datetime, timezone
 import time
+import pyttsx3
 
 def load_face_encodings(data_dir="data"):
-    """Loads all images for each person and returns lists of encodings and names."""
     known_face_encodings = []
     known_face_names = []
 
     print("\nLoading face data from all folders...")
 
-    # Loop over each person's directory in data/
     for person_name in os.listdir(data_dir):
         person_folder = os.path.join(data_dir, person_name)
         if not os.path.isdir(person_folder):
-            continue  # Skip files
+            continue
 
-        # Loop over each image file in the person's folder
         for filename in os.listdir(person_folder):
             file_path = os.path.join(person_folder, filename)
-            if not (filename.lower().endswith(('.jpg', '.jpeg', '.png'))):
-                continue  # Skip non-image files
+            if not filename.lower().endswith(('.jpg', '.jpeg', '.png')):
+                continue
 
             try:
-                # Load with PIL, convert to RGB
                 image = Image.open(file_path).convert('RGB')
                 image_np = np.ascontiguousarray(np.array(image))
 
-                # Detect faces and get encodings
                 face_locations = face_recognition.face_locations(image_np)
                 if not face_locations:
                     print(f"No face found in {file_path}, skipping.")
@@ -65,11 +61,28 @@ def initialize_camera(preferred_index=0):
         return cap, idx
     return None, None
 
+def speak_names(names, tts_engine):
+    if not names:
+        tts_engine.say("I cannot identify anyone")
+    else:
+        known = [n for n in names if n != "Unknown"]
+        unknown = [n for n in names if n == "Unknown"]
+        if known:
+            if len(known) == 1:
+                tts_engine.say(f"This is {known[0]}")
+            else:
+                tts_engine.say("I can see " + " and ".join(known))
+        if unknown:
+            if len(unknown) == 1:
+                tts_engine.say("I am not trained with this person, so I cannot identify them")
+            elif len(unknown) > 1:
+                tts_engine.say(f"I am not trained with these {len(unknown)} people, so I cannot identify them")
+    tts_engine.runAndWait()
+
 def main():
     print("=== Face Recognition System ===")
     print(f"Start Time: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC")
 
-    # Load all known faces
     known_face_encodings, known_face_names = load_face_encodings("data")
 
     if not known_face_encodings:
@@ -81,11 +94,15 @@ def main():
 
     if video_capture is None:
         print("Error: Could not initialize any camera!")
-        print("Please check your webcam connection and permissions")
         return
 
     print(f"\nUsing camera index: {camera_index}")
     print("Press 'q' to quit")
+
+    tts_engine = pyttsx3.init()
+    last_spoken_names = set()
+    last_speak_time = 0
+    speak_interval = 3  # seconds
 
     try:
         while True:
@@ -101,6 +118,8 @@ def main():
 
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             face_locations = face_recognition.face_locations(rgb_frame)
+            names_in_frame = []
+
             if face_locations:
                 face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
                 for (top, right, bottom, left), face_encoding in zip(face_locations, face_encodings):
@@ -109,9 +128,22 @@ def main():
                     if True in matches:
                         first_match_index = matches.index(True)
                         name = known_face_names[first_match_index]
-                    cv2.rectangle(frame, (left, top), (right, bottom), (0, 255, 0), 2)
+                    names_in_frame.append(name)
+
+                    # Color: red for unknown, green for known
+                    box_color = (0, 255, 0) if name != "Unknown" else (0, 0, 255)
+                    cv2.rectangle(frame, (left, top), (right, bottom), box_color, 2)
                     cv2.putText(frame, name, (left + 6, bottom - 6),
                                 cv2.FONT_HERSHEY_DUPLEX, 0.6, (255, 255, 255), 1)
+
+            # Avoid repeating speech unnecessarily
+            names_set = set(names_in_frame)
+            now = time.time()
+            if (names_set != last_spoken_names or now - last_speak_time > speak_interval) and names_in_frame:
+                speak_names(names_in_frame, tts_engine)
+                last_spoken_names = names_set
+                last_speak_time = now
+
             cv2.imshow('Face Recognition', frame)
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
